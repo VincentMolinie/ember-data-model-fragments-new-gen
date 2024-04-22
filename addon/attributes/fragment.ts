@@ -1,11 +1,22 @@
 import { assert } from '@ember/debug';
 import { computed } from '@ember/object';
 import { typeOf } from '@ember/utils';
-import metaTypeFor from '../util/meta-type-for';
-import isInstanceOfType from '../util/instance-of-type';
 import { peekCache } from '@ember-data/store/-private';
-import { recordIdentifierFor } from '@ember-data/store';
-import { uuid } from '@ember/-internals/utils/lib/guid';
+import Store, { recordIdentifierFor } from '@ember-data/store';
+import type { StableRecordIdentifier } from '@warp-drive/core-types/identifier';
+import Model from '@ember-data/model';
+import fragmentToObject from 'ember-data-model-fragments-new-gen/utils/fragment-to-object';
+import { getIdentifierForFragment } from 'ember-data-model-fragments-new-gen/utils/identifier-utils';
+
+export type FragmentIdentifier = StableRecordIdentifier & {
+  parentIdentifier: StableRecordIdentifier | FragmentIdentifier;
+  key: string;
+};
+export function isFragmentIdentifier(
+  value: StableRecordIdentifier,
+): value is FragmentIdentifier {
+  return 'parentIdentifier' in value;
+}
 
 export function metaTypeFor(
   name: string,
@@ -33,20 +44,29 @@ export type FragmentOptions = {
 };
 
 export function getFragmentFromRecord(
+  store: Store,
   record: StableRecordIdentifier,
   type: string,
   key: string,
 ) {
   const ownerIdentifier = recordIdentifierFor(record);
-  const fragmentIdentifier: StableRecordIdentifier = {
-    id: `${ownerIdentifier.id}-${key}`,
-    type,
-  };
+  const fragmentIdentifier = store.identifierCache.createIdentifierForNewRecord(
+    {
+      id: `${ownerIdentifier.id}-${key}`,
+      type,
+    },
+  );
 
   const attr = peekCache(ownerIdentifier)?.getAttr(ownerIdentifier, key);
-  return (
-    attr && record.store._instanceCache.getRecord(fragmentIdentifier, attr)
+  if (!attr) {
+    return attr;
+  }
+
+  const fragmentInstance = record.store._instanceCache.getRecord(
+    fragmentIdentifier,
+    attr,
   );
+  return fragmentInstance;
 }
 
 /**
@@ -85,20 +105,25 @@ export function getFragmentFromRecord(
  @param {Object} options a hash of options
  @return {Attribute}
  */
-export default function fragment(type: string, options: FragmentOptions) {
+export default function fragment(type: string, options: FragmentOptions = {}) {
   options = options || {};
 
   const metaType = metaTypeFor('fragment', type, options);
 
   const meta = {
     modelName: type,
-    type: metaType,
+    type,
+    // type: metaType,
     isAttribute: true,
     isFragment: true,
-    kind: 'fragment',
+    kind: 'attribute',
+    fragmentKind: 'fragment',
+
     options,
   };
-  const fragmentId = uuid();
+  // const fragmentId = uuid();
+
+  let fragmentIdentifier: StableRecordIdentifier;
 
   // eslint-disable-next-line ember/require-computed-property-dependencies
   return computed({
@@ -112,16 +137,51 @@ export default function fragment(type: string, options: FragmentOptions) {
       if (this.isDestroyed || this.isDestroying) {
         return;
       }
-      return getFragmentFromRecord(this, type, key);
+
+      const ownerIdentifier = recordIdentifierFor(this);
+      const attr = peekCache(ownerIdentifier)?.getAttr(ownerIdentifier, key);
+      if (!attr) {
+        return attr;
+      }
+
+      let isInitialization = false;
+      if (!fragmentIdentifier) {
+        fragmentIdentifier =
+          this.store.identifierCache.getOrCreateRecordIdentifier(
+            getIdentifierForFragment(ownerIdentifier, key, type),
+          );
+        // attr = this.store.cache.clientDidCreate(fragmentIdentifier, attr);
+        isInitialization = true;
+      }
+
+      const fragmentInstance = this.store._instanceCache.getRecord(
+        fragmentIdentifier,
+        attr,
+      );
+      if (isInitialization) {
+        this.store.setFragmentOwner(fragmentInstance, key, this);
+      }
+      fragmentIdentifier = null;
+
+      return fragmentInstance;
 
       // const fragment = peekCache(this)?.getFragment(recordIdentifierFor(this), type, key);
       // return ?.getAttr(recordIdentifierFor(this), key);
     },
     set(key, value) {
-      // assert(
-      //   'You must pass a fragment or null to set a fragment',
-      //   value === null || isFragment(value) || typeOf(value) === 'object',
-      // );
+      assert(
+        'You must pass a fragment or null to set a fragment',
+        value === null ||
+          value instanceof Fragment ||
+          typeOf(value) === 'object',
+      );
+
+      assert(
+        'You cannot set a fragment of another model on this model',
+        !(value instanceof Fragment) ||
+          !this.store.getFragmentOwner(value) ||
+          this.store.getFragmentOwner(value).owner === this,
+      );
       // const recordData = recordDataFor(this);
       // if (value === null) {
       //   recordData.setDirtyFragment(key, null);
@@ -153,42 +213,94 @@ export default function fragment(type: string, options: FragmentOptions) {
         `Attempted to set '${key}' on the deleted record ${identifier.type}:${identifier.id} (${identifier.lid})`,
         !this.currentState.isDeleted,
       );
-      const cache = peekCache(this);
+      const cache = peekCache(identifier);
 
-      const currentValue = cache?.getAttr(identifier, key);
-      if (currentValue !== value && (!currentValue || !value)) {
-        cache?.setAttr(identifier, key, value);
-
-        if (!this.isValid) {
-          // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-          const { errors } = this;
-          // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
-          if (errors.get(key)) {
-            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
-            errors.remove(key);
-            this.currentState.cleanErrorRequests();
-          }
-        }
-      } else if (JSON.stringify(currentValue) !== JSON.stringify(value)) {
-        cache?.setAttr(identifier, key, value);
-
-        if (!this.isValid) {
-          // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-          const { errors } = this;
-          // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
-          if (errors.get(key)) {
-            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
-            errors.remove(key);
-            this.currentState.cleanErrorRequests();
-          }
-        }
-
-        this.constructor.eachAttributes(attributeName => {
-          
-        })
+      if (value instanceof Fragment) {
+        const fragmentIdentifier = recordIdentifierFor(value);
+        this.store.identifierCache.updateRecordIdentifier(
+          fragmentIdentifier,
+          getIdentifierForFragment(identifier, key, type),
+        );
       }
 
-      return value;
+      const currentValue = cache?.getAttr(identifier, key);
+      const valueAsObject = fragmentToObject(value);
+      if (currentValue !== valueAsObject && (!currentValue || !value)) {
+        cache?.setAttr(identifier, key, valueAsObject);
+
+        if (!this.isValid) {
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+          const { errors } = this;
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+          if (errors.get(key)) {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+            errors.remove(key);
+            this.currentState.cleanErrorRequests();
+          }
+        }
+      } else if (
+        JSON.stringify(currentValue) !== JSON.stringify(valueAsObject)
+      ) {
+        cache?.setAttr(identifier, key, valueAsObject);
+
+        if (!this.isValid) {
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+          const { errors } = this;
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+          if (errors.get(key)) {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+            errors.remove(key);
+            this.currentState.cleanErrorRequests();
+          }
+        }
+
+        // this.constructor.eachAttributes((attributeName) => {});
+      }
+      if (!value) {
+        return value;
+      }
+
+      let fragmentIdentifier;
+      if (value instanceof Fragment) {
+        fragmentIdentifier = recordIdentifierFor(value);
+        this.store.identifierCache.updateRecordIdentifier(
+          fragmentIdentifier,
+          getIdentifierForFragment(identifier, key, type),
+        );
+      } else {
+        fragmentIdentifier =
+          this.store.identifierCache.getOrCreateRecordIdentifier(
+            getIdentifierForFragment(identifier, key, type),
+          );
+      }
+
+      const fragmentInstance = this.store._instanceCache.getRecord(
+        fragmentIdentifier,
+        value,
+      );
+      return fragmentInstance;
     },
   }).meta(meta);
+}
+
+export class Fragment extends Model {
+  _parent: Model | Fragment;
+
+  getCurrentValue() {
+    const cache = peekCache(this);
+
+    const { owner, key } = this.store.getFragmentOwner(this) || {};
+    if (!owner) {
+      const currentValue: Record<string, unknown> = {};
+      const identifier = recordIdentifierFor(this);
+      this.constructor.eachAttribute((attributeName) => {
+        currentValue[attributeName] = cache?.getAttr(identifier, attributeName);
+      });
+      return currentValue;
+    }
+
+    const ownerIdentifier = recordIdentifierFor(owner);
+
+    return cache.getAttr(ownerIdentifier, key);
+  }
 }

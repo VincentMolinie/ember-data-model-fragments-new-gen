@@ -10,9 +10,11 @@ import type {
   TypeFromInstance,
 } from '@warp-drive/core-types/record';
 import type { InstanceCache } from './instance-cache';
+import type { IdentifierCache } from '@ember-data/store/cache';
 
 export default class Store extends Service {
   _instanceCache: InstanceCache;
+  identifierCache: IdentifierCache;
 
   public createCache(storeWrapper: CacheCapabilitiesManager): Cache;
 
@@ -26,6 +28,8 @@ export default class Store extends Service {
 
   public modelFor<T>(type: TypeFromInstance<T>): ModelSchema<T>;
   public modelFor(type: string): ModelSchema;
+
+  public peekRecord<T extends Model>(modelName: string, id: string): T | null;
 }
 
 export function recordIdentifierFor<T extends TypedRecordInstance>(
