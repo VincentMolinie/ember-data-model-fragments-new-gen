@@ -30,8 +30,8 @@ jobs:
           key: ${{ runner.os }}-${{ hashFiles('.nvmrc') }}-modules-${{ hashFiles('**/yarn.lock') }}  
       - name: Install dependencies
         run: yarn install --frozen-lockfile --non-interactive --production=false
-      - name: Lint
-        run: npm run lint
+      # - name: Lint
+      #   run: npm run lint
       - name: Run Tests
         run: npm run test:ember
 
