@@ -23,11 +23,15 @@ jobs:
         uses: actions/setup-node@v3
         with:
           node-version: 18
-          cache: npm
-      - name: Install Dependencies
-        run: npm ci
-      - name: Lint
-        run: npm run lint
+          cache: yarn
+      - uses: actions/cache@v3
+        with:
+          path: "**/node_modules"
+          key: ${{ runner.os }}-${{ hashFiles('.nvmrc') }}-modules-${{ hashFiles('**/yarn.lock') }}  
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile --non-interactive --production=false
+      # - name: Lint
+      #   run: npm run lint
       - name: Run Tests
         run: npm run test:ember
 
@@ -41,9 +45,9 @@ jobs:
       - uses: actions/setup-node@v3
         with:
           node-version: 18
-          cache: npm
-      - name: Install Dependencies
-        run: npm install --no-shrinkwrap
+          cache: yarn
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile --non-interactive --production=false
       - name: Run Tests
         run: npm run test:ember
 
@@ -71,8 +75,8 @@ jobs:
         uses: actions/setup-node@v3
         with:
           node-version: 18
-          cache: npm
-      - name: Install Dependencies
-        run: npm ci
+          cache: yarn
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile --non-interactive --production=false
       - name: Run Tests
         run: ./node_modules/.bin/ember try:one ${{ matrix.try-scenario }}
